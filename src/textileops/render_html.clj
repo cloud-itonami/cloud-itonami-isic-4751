@@ -1,0 +1,256 @@
+(ns textileops.render-html
+  "Build-time HTML renderer for `docs/samples/operator-console.html`.
+
+  Closes flagship checklist item 2 (com-junkawasaki/root ADR-2607189300,
+  Wave1 Lane A-no-demo): this repo previously had NO demo page and no
+  generator at all. This namespace drives the REAL actor stack
+  (`textileops.operation` -> `textileops.governor` -> `textileops.store`)
+  through a scenario adapted from this repo's own `textileops.sim` demo
+  driver (`clojure -M:dev:run`, confirmed BEFORE writing this file to
+  produce a sensible ledger against the real seeded store/vendor ids
+  `store-1`..`store-3` / `vendor-1`..`vendor-2` -- unlike
+  `cloud-itonami-isic-851`'s `schoolops.sim`, this repo's own sim driver
+  uses ids that DO match `textileops.store/demo-data`, so it was safe to
+  reuse rather than author from scratch), trimmed to a representative
+  subset (clean phase-3 auto-commits, escalate+approve paths for
+  high-cost supply and quality-concern flagging, and several distinct
+  HARD-hold reasons) and rendered deterministically -- no invented
+  numbers, no timestamps in the page content, byte-identical across
+  reruns against the same seed (verify by diffing two consecutive runs).
+
+  Usage: `clojure -M:dev:render-html [out-file]`
+  (default `docs/samples/operator-console.html`)."
+  (:require [jp-go-dds.skin]
+            [clojure.string :as str]
+            [textileops.advisor :as advisor]
+            [textileops.store :as store]
+            [textileops.operation :as op]
+            [langgraph.graph :as g]))
+
+(def ^:private operator
+  {:actor-id "coord-1" :actor-role :fabric-store-coordinator :phase 3})
+
+(defn- exec! [actor tid request]
+  (g/run* actor {:request request :context operator} {:thread-id tid}))
+
+(defn- approve! [actor tid]
+  (g/run* actor {:approval {:status :approved :by "textile-quality-coordinator-1"}}
+          {:thread-id tid :resume? true}))
+
+(defn run-demo!
+  "Runs a fresh seeded store through a scenario mixing every disposition
+  this actor can reach: store-1 clears a phase-3 sales-record log
+  (auto-commit clean), a staffing-operation schedule (auto-commit clean),
+  a low-cost supply-order naming verified vendor-1 (auto-commit clean), a
+  high-cost supply-order (ALWAYS escalates -- approved), and a
+  quality-concern flag (ALWAYS escalates -- approved); then four
+  DISTINCT HARD-hold reasons, none of which ever reach a human: store-99
+  unregistered (`:store-unverified`); store-3 registered but not yet
+  verified (`:store-unverified`); store-1 + vendor-2 unverified
+  (`:vendor-unverified`); store-1 with an advisor that claims
+  `:effect :commit` (`:effect-not-propose`); and store-1 with injected
+  quality-dispute-resolution finalization text (`:scope-excluded`).
+  Every HARD hold never reaches a human. Returns the resulting store --
+  every field read by `render` below is real governor/store output, not
+  a hand-typed copy."
+  []
+  (let [db (store/seed-db)
+        actor (op/build db)]
+
+    ;; store-1: clean sales-record log -- phase-3 auto-commit.
+    (exec! actor "t1-sales" {:op :log-sales-record :store-id "store-1"
+                             :patch {:units-sold 30 :yards-cut 76.0
+                                     :returns 1 :stock-count-delta -31}})
+
+    ;; store-1: clean staffing schedule -- phase-3 auto-commit.
+    (exec! actor "t2-staff" {:op :schedule-staffing-operation :store-id "store-1"
+                             :patch {:shift "weekend-cutting-counter"
+                                     :date "2026-07-20" :window "10:00-18:00"}})
+
+    ;; store-1: low-cost supply-order, verified vendor-1 -- phase-3 auto-commit.
+    (exec! actor "t3-supply-low" {:op :coordinate-supply-order :store-id "store-1"
+                                  :patch {:item "quilting-cotton bolts restock"
+                                          :quantity 40 :estimated-cost 360.0
+                                          :vendor-id "vendor-1"}})
+
+    ;; store-1: HIGH-cost supply-order -- ALWAYS escalates; human approves.
+    (exec! actor "t4-supply-high" {:op :coordinate-supply-order :store-id "store-1"
+                                   :patch {:item "wool-suiting bolts, seasonal collection"
+                                           :quantity 60 :estimated-cost 2400.0
+                                           :vendor-id "vendor-1"}})
+    (approve! actor "t4-supply-high")
+
+    ;; store-1: quality-concern flag -- ALWAYS escalates; human approves.
+    (exec! actor "t5-quality" {:op :flag-quality-concern :store-id "store-1"
+                               :patch {:concern "bolt #4471 shows a dye-lot mismatch against the swatch card, and the fiber-content label reads 100% cotton but the burn test suggests a poly blend"
+                                       :confidence 0.9}})
+    (approve! actor "t5-quality")
+
+    ;; store-99: unregistered -> HARD hold on :store-unverified.
+    (exec! actor "t6-unreg" {:op :log-sales-record :store-id "store-99"
+                             :patch {:units-sold 0}})
+
+    ;; store-3: registered but unverified -> HARD hold on :store-unverified.
+    (exec! actor "t7-unverified" {:op :log-sales-record :store-id "store-3"
+                                  :patch {:units-sold 10}})
+
+    ;; store-1 + vendor-2 (unverified) -> HARD hold on :vendor-unverified.
+    (exec! actor "t8-vendor" {:op :coordinate-supply-order :store-id "store-1"
+                              :patch {:item "imported linen bolts"
+                                      :quantity 25 :estimated-cost 300.0
+                                      :vendor-id "vendor-2"}})
+
+    ;; store-1: advisor claims direct actuation -> HARD hold on :effect-not-propose.
+    (let [actor-direct (op/build db {:advisor (reify advisor/Advisor
+                                                (-advise [_ _ req]
+                                                  (assoc (advisor/infer nil req) :effect :commit)))})]
+      (exec! actor-direct "t9-effect" {:op :schedule-staffing-operation :store-id "store-1"
+                                       :patch {:shift "weekday-cutting-counter"
+                                               :date "2026-07-22"}}))
+
+    ;; store-1: advisor drifts into quality-dispute finalization -> HARD hold on :scope-excluded.
+    (exec! actor "t10-scope" {:op :log-sales-record :store-id "store-1"
+                              :out-of-scope? true
+                              :patch {}})
+    db))
+
+;; ----------------------------- rendering -----------------------------
+
+(defn- esc [v]
+  (-> (str v)
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")))
+
+(defn- yesno [b]
+  (if b "<span class=\"ok\">yes</span>" "<span class=\"critical\">no</span>"))
+
+(defn- last-fact-for [ledger store-id]
+  (last (filter #(= (:store-id %) store-id) ledger)))
+
+(defn- status-cell [ledger store-id]
+  (let [f (last-fact-for ledger store-id)]
+    (cond
+      (nil? f) "<span class=\"muted\">no activity</span>"
+      (= :committed (:t f)) "<span class=\"ok\">committed</span>"
+      (= :approval-granted (:t f)) "<span class=\"ok\">approved &amp; committed</span>"
+      (= :governor-hold (:t f))
+      (let [rule (-> f :violations first :rule)]
+        (str "<span class=\"critical\">HARD hold &middot; " (esc (name (or rule :unknown))) "</span>"))
+      (= :approval-requested (:t f)) "<span class=\"warn\">awaiting approval</span>"
+      :else "<span class=\"muted\">in progress</span>")))
+
+(defn- store-row [ledger {:keys [store-id name registered? verified?]}]
+  (format "        <tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+          (esc store-id) (esc name)
+          (yesno registered?) (yesno verified?)
+          (status-cell ledger store-id)))
+
+(defn- vendor-row [{:keys [vendor-id name registered? verified?]}]
+  (format "        <tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+          (esc vendor-id) (esc name)
+          (yesno registered?) (yesno verified?)))
+
+(defn- coord-row [{:keys [op store-id value payload]}]
+  (format "        <tr><td><code>%s</code></td><td>%s</td><td>%s</td></tr>"
+          (esc (name (or op :n-a))) (esc store-id)
+          (esc (pr-str (or payload value {})))))
+
+(defn- ledger-row [{:keys [t op store-id disposition basis]}]
+  (format "        <tr><td>%s</td><td><code>%s</code></td><td>%s</td><td>%s</td></tr>"
+          (esc (name t)) (esc (name (or op :n-a))) (esc store-id)
+          (esc (or (some->> basis (map #(if (keyword? %) (name %) (str %))) (str/join ", "))
+                    (some-> disposition name) ""))))
+
+(def ^:private action-gate-rows
+  ;; Static description of this actor's own closed op contract
+  ;; (README `Ops`, `textileops.governor`/`textileops.phase`) --
+  ;; documentation of fixed behavior, not runtime telemetry, so it is
+  ;; legitimately hand-described rather than derived from a live run.
+  ["        <tr><td><code>:log-sales-record</code></td><td><span class=\"ok\">phase-3 auto-commit when clean &middot; sales/inventory/cut-yardage observation log only</span></td></tr>"
+   "        <tr><td><code>:schedule-staffing-operation</code></td><td><span class=\"ok\">phase-3 auto-commit when clean &middot; floor roster proposal only</span></td></tr>"
+   "        <tr><td><code>:coordinate-supply-order</code></td><td><span class=\"warn\">phase-3 auto-commit when clean &amp; low-cost &middot; high-cost (above threshold) ALWAYS human approval &middot; vendor independently verified</span></td></tr>"
+   "        <tr><td><code>:flag-quality-concern</code></td><td><span class=\"warn\">ALWAYS human approval &middot; never auto at any phase &middot; observation only, never dispute finalization</span></td></tr>"])
+
+(defn render
+  "Renders the full operator-console.html document from a store `db`
+  that has already run `run-demo!` (or any other real scenario)."
+  [db]
+  (let [ledger (vec (store/ledger db))
+        stores (store/all-store-records db)
+        vendors (store/all-vendor-records db)
+        coord (store/coordination-log db)
+        store-rows (str/join "\n" (map (partial store-row ledger) stores))
+        vendor-rows (str/join "\n" (map vendor-row vendors))
+        coord-rows (str/join "\n" (map coord-row coord))
+        ledger-rows (str/join "\n" (map ledger-row ledger))]
+    (str
+     "<html><head><meta charset=\"utf-8\"><title>cloud-itonami-isic-4751 &middot; retail sale of textiles in specialized stores</title><style>"
+   (jp-go-dds.skin/dds+skin)
+   "</style></head><body>\n"
+     "<header class=\"bar\">\n"
+     "  <h1>Retail sale of textiles in specialized stores (ISIC 4751) — Operator Console</h1>\n"
+     "  <span class=\"badge\">read-only sample · governor-gated · quality-concern flag &amp; high-cost supply always human-approved</span>\n"
+     "</header>\n"
+     "<main>\n"
+     "  <section class=\"card\">\n"
+     "    <h2>Stores</h2>\n"
+     "    <p class=\"muted\">Demo snapshot — build-time-generated from <code>textileops.store</code> via <code>textileops.render-html</code> (<code>clojure -M:dev:render-html</code>), regenerated nightly. A store must be independently <code>:registered?</code> and <code>:verified?</code> before any proposal may proceed.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>Store</th><th>Name</th><th>Registered</th><th>Verified</th><th>Last op status</th></tr></thead>\n"
+     "      <tbody>\n"
+     store-rows "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+     "  <section class=\"card\">\n"
+     "    <h2>Vendors (fabric mills / wholesalers)</h2>\n"
+     "    <p class=\"muted\">Supply-order proposals name a vendor; the governor re-derives verification from this directory, never from proposal self-report.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>Vendor</th><th>Name</th><th>Registered</th><th>Verified</th></tr></thead>\n"
+     "      <tbody>\n"
+     vendor-rows "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+     "  <section class=\"card\">\n"
+     "    <h2>Committed coordination log</h2>\n"
+     "    <p class=\"muted\">Proposals that cleared the TextileRetailGovernor and (when required) a human fabric-store coordinator. Every entry is <code>:effect :propose</code> only — never a direct refund, sale void, or vendor chargeback.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>Op</th><th>Store</th><th>Value</th></tr></thead>\n"
+     "      <tbody>\n"
+     coord-rows "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+     "  <section class=\"card\">\n"
+     "    <h2>Action gate (Textile Retail Governor)</h2>\n"
+     "    <p class=\"muted\">HARD holds cannot be overridden. Store and vendor registration are independently re-derived; any non-<code>:propose</code> effect and any quality-dispute-resolution finalization are permanently blocked; a quality-concern flag or high-cost supply order always needs a human.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>Op</th><th>Gate</th></tr></thead>\n"
+     "      <tbody>\n"
+     (str/join "\n" action-gate-rows) "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+     "  <section class=\"card\">\n"
+     "    <h2>Audit ledger (this run)</h2>\n"
+     "    <p class=\"muted\">Append-only decision-fact log — every proposal, hold and commit this scenario produced.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>Fact</th><th>Op</th><th>Store</th><th>Basis</th></tr></thead>\n"
+     "      <tbody>\n"
+     ledger-rows "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+     "</main>\n"
+     "</body></html>\n")))
+
+(defn -main [& args]
+  (let [out (or (first args) "docs/samples/operator-console.html")
+        db (run-demo!)
+        html (render db)]
+    (.mkdirs (java.io.File. (.getParent (java.io.File. out))))
+    (spit out html)
+    (println "wrote" out "(" (count (store/ledger db)) "ledger facts,"
+             (count (store/coordination-log db)) "coordination commits )")))
