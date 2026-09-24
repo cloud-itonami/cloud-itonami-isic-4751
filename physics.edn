@@ -1,0 +1,44 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:dev:physics` runs it.
+;;
+;; README "Robotics premise": a robot may perform the physical work of a
+;; fabric / notions store (ISIC 4751) -- bolt shelving, cutting-table
+;; dispensing, restocking. Here: an arm lifting fabric bolts from the cutting
+;; table back onto the bolt wall, and a restocking cart carrying bolts stacked
+;; high from the stockroom to the sales floor.
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+;; Replacing an estimate with a sourced value is this bot's growth work.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-isic-4751"
+ :cases
+ [{:id :reshelve-fabric-bolt
+   :kind :manipulator
+   :procedure "arm lifts a fabric bolt from the cutting table back onto an upper slot of the bolt wall"
+   :params {:l1-m 0.55 :l2-m 0.50 :m1-kg 5.0 :m2-kg 3.5
+            :from [0.70 0.05] :to [0.25 0.90] :duration-s 3.0 :steps 500}
+   :sweep {:param :payload-kg :values [2.0 4.0 6.0 9.0 12.0]}
+   :quantity :peak-tau1-nm
+   :limit {:max 120.0 :basis "estimate: continuous shoulder torque of a ~10 kg-payload collaborative arm; a heavy upholstery bolt is ~10-12 kg"}
+   :boundary {:lo 0.5 :hi 40.0}}
+  {:id :bolt-restock-cart
+   :kind :transport
+   :procedure "restocking cart carries fabric bolts stacked upright from the stockroom to the sales floor, braking at the aisle end"
+   :params {:mass-kg 70.0 :distance-m 35.0 :v-max-mps 1.0 :a-max-mps2 0.6
+            :brake-decel-mps2 1.5 :drive-force-n 250.0 :crr 0.02
+            :cog-height-m 0.40 :payload-cog-height-m 0.95
+            :support-half-length-m 0.30 :max-time-s 600.0}
+   :sweep {:param :payload-kg :values [20.0 50.0 80.0 120.0 160.0]}
+   :quantity :min-tipover-margin
+   :limit {:min 0.25 :basis "estimate: keep a 25 % static-stability reserve against tipping under braking, for bolts stacked upright on the cart"}}
+  {:id :loaded-cart-up-stockroom-ramp
+   :kind :transport
+   :procedure "fully loaded bolt cart climbs the ramp between the stockroom and the sales floor"
+   :params {:mass-kg 70.0 :payload-kg 160.0 :distance-m 12.0 :v-max-mps 0.8 :a-max-mps2 0.5
+            :brake-decel-mps2 1.5 :drive-force-n 250.0 :crr 0.02
+            :cog-height-m 0.40 :payload-cog-height-m 0.95
+            :support-half-length-m 0.30 :max-time-s 600.0}
+   :sweep {:param :slope-deg :values [0.0 2.0 4.0 5.0 6.0]}
+   :quantity :cycle-time-s
+   :limit {:max 30.0 :basis "estimate: a 12 m ramp leg should not hold the aisle longer than ~30 s; a stall (drive force below grade + rolling resistance) is out of tolerance"}
+   :boundary {:lo 0.0 :hi 10.0}}]}
